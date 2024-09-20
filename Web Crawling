@@ -1,0 +1,154 @@
+import time
+import datetime
+import pandas as pd
+from tqdm import tqdm
+from bs4 import BeautifulSoup
+from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.keys import Keys
+from selenium import webdriver
+from webdriver_manager.chrome import ChromeDriverManager
+
+# 크롬 옵션 설정
+options = webdriver.ChromeOptions()
+user_agent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/61.0.3163.100 Safari/537.36"
+options.add_argument('user-agent=' + user_agent)
+options.add_argument("lang=ko_KR")
+options.add_argument('window-size=1920x1080')
+options.add_argument("disable-gpu")
+options.add_argument("--no-sandbox")
+
+# 데이터 불러오기 및 필터링
+restaurant_df = pd.read_csv('./횟집.csv', encoding='utf-8', low_memory=False) #바꾸기
+store_names = restaurant_df['사업장명'].tolist() 
+
+# 크롬 드라이버 최신 버전 설정 & 실행
+service = Service(ChromeDriverManager().install())
+driver = webdriver.Chrome(service=service, options=options)
+
+# 현재 시각 저장 (파일 이름에 사용)
+now = datetime.datetime.now()
+
+# 식당명 검색 함수
+def search_place_id(restaurant_name):
+    search_url = f"https://search.naver.com/search.naver?query={restaurant_name}"
+    driver.get(search_url)
+    driver.implicitly_wait(10)
+    html = driver.page_source
+    soup = BeautifulSoup(html, 'html.parser')
+    a_tag = soup.select_one('#_title > a')
+
+    if a_tag and 'href' in a_tag.attrs:
+        href = a_tag['href']
+        place_id_with_params = href.split('/')[-1]
+        place_id = place_id_with_params.split('?')[0]
+        return place_id
+
+    return None
+
+# 리뷰 크롤링 함수
+def crawl_reviews(store_name, url):
+    driver.get(url)
+    time.sleep(3)
+
+    # 페이지 스크롤 및 더보기 버튼 클릭
+    for _ in range(50):  # 최대 50번 반복
+        driver.find_element(By.TAG_NAME, 'body').send_keys(Keys.PAGE_DOWN)
+        time.sleep(2)
+        try:
+            more_button = WebDriverWait(driver, 10).until(
+                EC.element_to_be_clickable((By.XPATH, '//*[@id="app-root"]/div/div/div/div[6]/div[2]/div[3]/div[2]/div/a'))
+            )
+            more_button.click()
+            time.sleep(3)
+        except Exception as e:
+            print(f'더 이상 "더보기" 버튼이 없습니다: {str(e)}')
+            break
+
+    time.sleep(3)
+    html = driver.page_source
+    bs = BeautifulSoup(html, 'lxml')
+    reviews = bs.select('li.pui__X35jYm.EjjAW')
+
+    if not reviews:
+        print(f"리뷰를 찾지 못했습니다: {store_name}")
+        return None
+
+    data = []
+    for r in reviews:
+        content = r.select_one('div.pui__vn15t2 > a.pui__xtsQN-')
+        date_elements = r.select('div.pui__QKE5Pr > span.pui__gfuUIT > time')
+        date = date_elements[0].text if date_elements else 'N/A'
+        revisit_span = r.select('div.pui__QKE5Pr > span.pui__gfuUIT')
+        revisit = revisit_span[1].text if len(revisit_span) > 1 else 'N/A'
+
+        data.append({
+            'store_name': store_name,
+            'content': content.text.strip() if content else '',
+            'date': date.strip() if date else '',
+            'revisit': revisit.strip() if revisit else ''
+        })
+        time.sleep(0.06)
+
+    return data
+
+# 검색되지 않은 가게 정보를 저장할 리스트
+invalid_data = {
+    'store_name': [],
+    'reason': []
+}
+
+# 유효한 place_id를 가진 데이터를 저장할 리스트
+valid_data = []
+
+# 검색 및 URL 생성
+for name in tqdm(store_names, desc="Naver 검색 중"):
+    place_id = search_place_id(name)
+    if place_id:
+        url = f'https://m.place.naver.com/restaurant/{place_id}/review/visitor?entry=ple&reviewSort=recent'
+        valid_data.append({
+            'store_name': name,
+            'place_id': place_id,
+            'url': url
+        })
+    else:
+        invalid_data['store_name'].append(name)
+        invalid_data['reason'].append('검색 결과 없음')
+
+# 유효한 데이터를 크롤링하여 결과 저장
+crawled_data = []
+
+try:
+    for data in tqdm(valid_data, desc="크롤링 중"):
+        store_name = data['store_name']
+        url = data['url']
+        reviews = crawl_reviews(store_name, url)
+
+        if reviews:
+            crawled_data.extend(reviews)
+        else:
+            invalid_data['store_name'].append(store_name)
+            invalid_data['reason'].append('리뷰 없음')
+
+    # 크롤링한 데이터를 CSV 파일로 저장
+    crawled_df = pd.DataFrame(crawled_data)
+    file_name = 'naver_review_' + now.strftime('%Y-%m-%d_%H-%M-%S') + '.csv'
+    crawled_df.to_csv(file_name, encoding='utf-8-sig', index=False)
+
+except Exception as e:
+    print("크롤링 중 오류 발생:", str(e))
+    # 오류 발생 시까지의 데이터를 저장
+    if crawled_data:
+        crawled_df = pd.DataFrame(crawled_data)
+        file_name = '테스트_' + now.strftime('%Y-%m-%d_%H-%M-%S') + '.csv'  #오류 데이터 저장
+        crawled_df.to_csv(file_name, encoding='utf-8-sig', index=False)
+
+finally:
+    driver.quit()
+
+    # 검색되지 않은 가게 정보를 다시 저장 (리뷰 없는 경우 포함)
+    invalid_df = pd.DataFrame(invalid_data)
+    ifile_name = '횟집' + now.strftime('%Y-%m-%d_%H-%M-%S') + '.csv'     # 바꾸기
+    invalid_df.to_csv(ifile_name, encoding='utf-8-sig', index=False)
