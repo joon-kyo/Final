@@ -1,0 +1,138 @@
+------------------------
+
+
+텍스트 전처리
+
+
+
+------------------------
+
+
+import pandas as pd
+import os
+import datetime
+import re
+from konlpy.tag import Okt
+
+# 1. 파일 불러오기
+file_path = '../data/titanic/9월1일 최신화 네이버리뷰 전처리한것 테스트용으로 써야함.csv'
+df = pd.read_csv(file_path, encoding='utf-8-sig')
+
+# 2. 'content' 컬럼에서 NaN 값 및 빈 문자열 제거
+df = df.dropna(subset=['content'])  # NaN 제거
+df['content'] = df['content'].astype(str).str.strip()  # 문자열 변환 및 공백 제거
+df = df[df['content'] != '']  # 빈 문자열 제거
+
+# 3. 텍스트 전처리 함수
+def preprocess_text(text):
+    text = re.sub(r'\n', ' ', text)  # 개행 문자 제거
+    text = re.sub(r'[^\w\s]', '', text)  # 특수 문자 제거
+    text = text.strip()  # 앞뒤 공백 제거
+    return text
+
+# 4. 리뷰 데이터 전처리
+df['processed_content'] = df['content'].apply(preprocess_text)
+
+# 5. 형태소 분석 및 명사 추출
+okt = Okt()
+df['nouns'] = df['processed_content'].apply(lambda x: ' '.join(okt.nouns(x)))
+
+# 6. 저장할 경로 확인 및 생성
+save_dir = '../파이널 알아보기/'
+os.makedirs(save_dir, exist_ok=True)
+
+# 7. 전처리된 데이터를 새로운 CSV 파일로 저장
+now = datetime.datetime.now()
+file_name = '최종_리뷰전처리_' + now.strftime('%Y-%m-%d_%H-%M-%S') + '.csv'
+preprocessed_file_path = os.path.join(save_dir, file_name)
+df.to_csv(preprocessed_file_path, encoding='utf-8-sig', index=False)
+
+print(f"최종 전처리된 CSV 파일이 저장되었습니다: {preprocessed_file_path}")
+
+
+------------------------------------
+
+
+
+TEST
+
+
+
+---------------------------------------
+
+
+import pandas as pd
+import re
+from konlpy.tag import Okt
+from transformers import BertTokenizer, BertForSequenceClassification
+import torch
+import torch.nn.functional as F
+import os
+import datetime
+
+# 1. CSV 파일 읽기
+file_path = '../data/titanic/9월1일 최신화 네이버리뷰 전처리한것 테스트용으로 써야함.csv'
+df = pd.read_csv(file_path, encoding='utf-8-sig')
+
+# 2. NaN 및 빈 문자열 제거
+df = df.dropna(subset=['content'])  # NaN 제거
+df['content'] = df['content'].astype(str).str.strip()  # 문자열 변환 및 공백 제거
+df = df[df['content'] != '']  # 빈 문자열 제거
+
+# 3. 텍스트 전처리 함수
+def preprocess_text(text):
+    text = re.sub(r'\n', ' ', text)  # 개행 문자 제거
+    text = re.sub(r'[^\w\s]', '', text)  # 특수 문자 제거
+    text = text.strip()  # 앞뒤 공백 제거
+    return text
+
+# 전처리 수행
+df['processed_content'] = df['content'].apply(preprocess_text)
+
+# 4. 감성 분석 모델 로드 (KoBERT)
+tokenizer = BertTokenizer.from_pretrained('monologg/kobert')
+model = BertForSequenceClassification.from_pretrained('monologg/kobert')
+
+# 5. 감성 분석 함수 정의
+def sentiment_analysis(text):
+    if not text.strip():
+        return 0.0
+    
+    inputs = tokenizer(text, return_tensors='pt', truncation=True, max_length=512)
+    outputs = model(**inputs)
+    scores = F.softmax(outputs.logits, dim=1)
+    positive_prob = scores[0][1].item()
+    return positive_prob
+
+# 6. 가게별 감성 점수 계산
+store_sentiments = []
+
+# 데이터프레임을 가게별로 그룹화
+grouped = df.groupby('store_name')
+
+for store_name, group in grouped:
+    # 각 가게의 리뷰에 대해 감성 분석 수행
+    group['sentiment_score'] = group['processed_content'].apply(sentiment_analysis)
+    
+    # 가게별로 감성 점수 총합 계산
+    total_score = group['sentiment_score'].sum()
+    store_sentiments.append({'store_name': store_name, 'total_sentiment_score': total_score})
+
+# 결과를 데이터프레임으로 변환
+result_df = pd.DataFrame(store_sentiments)
+
+# 7. 결과 저장 경로 설정 및 저장
+save_dir = '../파이널 알아보기/'
+os.makedirs(save_dir, exist_ok=True)
+
+now = datetime.datetime.now()
+file_name = '가게별_감성분석_결과_' + now.strftime('%Y-%m-%d_%H-%M-%S') + '.csv'
+result_file_path = os.path.join(save_dir, file_name)
+result_df.to_csv(result_file_path, encoding='utf-8-sig', index=False)
+
+print(f"가게별 감성 분석 결과 CSV 파일이 저장되었습니다: {result_file_path}")
+
+
+
+
+
