@@ -1,0 +1,78 @@
+import pandas as pd
+
+# CSV 파일에서 데이터 불러오기
+# 'reviews.csv' 파일의 경로를 올바르게 설정하세요.
+df = pd.read_csv('./전처리 데이터 자른거.csv')
+
+# 리뷰 컬럼만 추출 
+reviews = df['content'].dropna().tolist()
+
+
+------------------------------------------------------------------------------------------------------------------------------
+
+# extract_keywords.py
+
+import pandas as pd
+import re
+from konlpy.tag import Okt
+from sklearn.feature_extraction.text import CountVectorizer
+from sentence_transformers import SentenceTransformer
+from sklearn.metrics.pairwise import cosine_similarity
+import numpy as np
+import itertools
+
+# CSV 파일에서 데이터 불러오기
+df = pd.read_csv("./전처리 데이터 자른거.csv")  # 파일 경로를 정확히 설정하세요
+reviews = df['content'].dropna().tolist()
+
+# 리뷰 데이터 전처리 함수
+def preprocess_text(text):
+    text = re.sub(r'\n', ' ', text)  # 개행 문자 제거
+    text = re.sub(r'[^\w\s]', '', text)  # 특수 문자 제거
+    text = text.strip()  # 앞뒤 공백 제거
+    return text
+
+# 모든 리뷰 전처리
+processed_reviews = [preprocess_text(review) for review in reviews]
+
+# 형태소 분석 및 명사 추출
+okt = Okt()
+nouns = []
+for review in processed_reviews:
+    nouns.extend(okt.nouns(review))
+text = ' '.join(nouns)
+
+# N-그램 생성
+n_gram_range = (1, 2)
+count_vectorizer = CountVectorizer(ngram_range=n_gram_range).fit([text])
+n_gram_words = count_vectorizer.get_feature_names_out()
+
+# Sentence Transformers 모델 로드 및 임베딩 생성
+model = SentenceTransformer('sentence-transformers/xlm-r-100langs-bert-base-nli-stsb-mean-tokens')
+reviews_embedding = model.encode(processed_reviews)
+n_gram_embeddings = model.encode(n_gram_words)
+
+# Max Sum Similarity 기법을 사용한 키워드 추출
+def max_sum_sim(reviews_embedding, n_gram_embeddings, n_gram_words, top_n, variety):
+    distances = cosine_similarity(reviews_embedding, n_gram_embeddings)
+    distances_candidates = cosine_similarity(n_gram_embeddings, n_gram_embeddings)
+    words_idx = list(distances.argsort()[0][-variety:])
+    words_vals = [n_gram_words[index] for index in words_idx]
+    distances_candidates = distances_candidates[np.ix_(words_idx, words_idx)]
+    min_sim = np.inf
+    candidate = None
+    for combination in itertools.combinations(range(len(words_idx)), top_n):
+        sim = sum([distances_candidates[i][j] for i in combination for j in combination if i != j])
+        if sim < min_sim:
+            candidate = combination
+            min_sim = sim
+    return [words_vals[idx] for idx in candidate]
+
+------------------------------------------------------------------------------------------------------------------------------
+
+
+# 상위 5개의 키워드 추출 및 출력
+review_keywords = max_sum_sim(reviews_embedding, n_gram_embeddings, n_gram_words, top_n=2, variety=10)
+print(f'리뷰 키워드 5개: {review_keywords}')
+
+
